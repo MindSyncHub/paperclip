@@ -32,6 +32,7 @@ describe("project and goal commands", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_CONTEXT;
   });
