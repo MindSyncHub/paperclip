@@ -11,6 +11,7 @@ const OPENAI_MODELS_TIMEOUT_MS = 5000;
 const OPENAI_MODELS_CACHE_TTL_MS = 60_000;
 
 let cached: { keyFingerprint: string; expiresAt: number; models: AdapterModel[] } | null = null;
+let codexCache: { cachePath: string; expiresAt: number; models: AdapterModel[] } | null = null;
 
 function fingerprint(apiKey: string): string {
   return `${apiKey.length}:${apiKey.slice(-6)}`;
@@ -46,10 +47,20 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
  * Returns an empty list when the file is missing, unreadable, malformed, or
  * lists nothing usable — the caller merges the static fallback either way.
  */
-function readCodexModelsCache(): AdapterModel[] {
+function readCodexModelsCache(options?: { forceRefresh?: boolean }): AdapterModel[] {
   try {
     const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
-    const raw = fs.readFileSync(path.join(codexHome, "models_cache.json"), "utf8");
+    const cachePath = path.join(codexHome, "models_cache.json");
+    const now = Date.now();
+    if (
+      !options?.forceRefresh
+      && codexCache
+      && codexCache.cachePath === cachePath
+      && codexCache.expiresAt > now
+    ) {
+      return codexCache.models;
+    }
+    const raw = fs.readFileSync(cachePath, "utf8");
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return [];
     const entries = (parsed as { models?: unknown }).models;
@@ -71,7 +82,13 @@ function readCodexModelsCache(): AdapterModel[] {
           : slug.trim();
       models.push({ id: slug.trim(), label });
     }
-    return dedupeModels(models);
+    const catalog = dedupeModels(models);
+    codexCache = {
+      cachePath,
+      expiresAt: now + OPENAI_MODELS_CACHE_TTL_MS,
+      models: catalog,
+    };
+    return catalog;
   } catch {
     return [];
   }
@@ -123,7 +140,7 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
     // ChatGPT-authenticated installs have no API key. Their catalog lives in
     // the Codex CLI's own models_cache.json, merged over the static fallback
     // so no id that shipped in a release disappears.
-    return mergedWithFallback(readCodexModelsCache());
+    return mergedWithFallback(readCodexModelsCache({ forceRefresh }));
   }
   const fallback = dedupeModels(codexFallbackModels);
 
@@ -161,4 +178,5 @@ export async function refreshCodexModels(): Promise<AdapterModel[]> {
 
 export function resetCodexModelsCacheForTests() {
   cached = null;
+  codexCache = null;
 }

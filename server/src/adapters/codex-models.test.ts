@@ -10,7 +10,7 @@ vi.mock("../config-file.js", () => ({
   readConfigFile: () => null,
 }));
 
-import { listCodexModels, refreshCodexModels } from "./codex-models.js";
+import { listCodexModels, refreshCodexModels, resetCodexModelsCacheForTests } from "./codex-models.js";
 
 function writeCache(dir: string, payload: unknown): void {
   fs.writeFileSync(
@@ -37,6 +37,7 @@ describe("codex model discovery via the CLI models cache", () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-codex-models-"));
     process.env.CODEX_HOME = tempHome;
     delete process.env.OPENAI_API_KEY;
+    resetCodexModelsCacheForTests();
   });
 
   afterEach(() => {
@@ -118,5 +119,21 @@ describe("codex model discovery via the CLI models cache", () => {
     const ids = models.map((m) => m.id);
     expect(ids).toContain("gpt-5");
     expect(ids).not.toContain("");
+  });
+
+  it("serves repeated listings from the TTL cache and refreshes on demand", async () => {
+    writeCache(tempHome, { models: [cacheEntry({ slug: "gpt-5.5" })] });
+    const first = await listCodexModels();
+    expect(first.map((m) => m.id)).toContain("gpt-5.5");
+
+    // Rewrite the file: an ordinary listing still serves the cached catalog,
+    // while an explicit refresh re-reads the file.
+    writeCache(tempHome, { models: [cacheEntry({ slug: "gpt-6-new" })] });
+    const second = await listCodexModels();
+    expect(second.map((m) => m.id)).toContain("gpt-5.5");
+    expect(second.map((m) => m.id)).not.toContain("gpt-6-new");
+
+    const refreshed = await refreshCodexModels();
+    expect(refreshed.map((m) => m.id)).toContain("gpt-6-new");
   });
 });
