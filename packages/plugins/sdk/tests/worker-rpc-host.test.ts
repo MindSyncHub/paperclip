@@ -1102,8 +1102,8 @@ describe("worker duplex channel dispatch", () => {
 describe("worker http.fetch response rebuild", () => {
   // The host serializes the upstream reply as
   // `{ status, statusText, headers, body }`. The worker rebuilds a `Response`
-  // from those fields. The Fetch spec forbids a body on null-body statuses
-  // (101, 204, 205, 304), so a plain `new Response(body)` throws for a
+  // from those fields. The Fetch spec forbids a body on null-body
+  // statuses (204, 205, 304), so a plain `new Response(body)` throws for a
   // successful 204 No Content and the plugin reports a landed write as failed.
   // The shim must drop the serialized body for those statuses, matching what
   // global `fetch` returns for the same upstream reply.
