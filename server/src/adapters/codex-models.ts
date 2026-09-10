@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
@@ -29,6 +33,48 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
     ...models,
     ...codexFallbackModels,
   ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
+}
+
+/**
+ * Read the Codex CLI's own model catalog, `$CODEX_HOME/models_cache.json`
+ * (default `~/.codex/models_cache.json`). The CLI refreshes this file from
+ * the ChatGPT backend during normal use, so it is authoritative for exactly
+ * the ChatGPT-authenticated installs that the OpenAI API-key path cannot
+ * serve. Entries the CLI does not list in its picker (`visibility` other
+ * than "list", e.g. internal slugs) stay out of the catalog.
+ *
+ * Returns an empty list when the file is missing, unreadable, malformed, or
+ * lists nothing usable — the caller merges the static fallback either way.
+ */
+function readCodexModelsCache(): AdapterModel[] {
+  try {
+    const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+    const raw = fs.readFileSync(path.join(codexHome, "models_cache.json"), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return [];
+    const entries = (parsed as { models?: unknown }).models;
+    if (!Array.isArray(entries)) return [];
+
+    const models: AdapterModel[] = [];
+    for (const entry of entries) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const { slug, display_name: displayName, visibility } = entry as {
+        slug?: unknown;
+        display_name?: unknown;
+        visibility?: unknown;
+      };
+      if (visibility !== "list") continue;
+      if (typeof slug !== "string" || slug.trim().length === 0) continue;
+      const label =
+        typeof displayName === "string" && displayName.trim().length > 0
+          ? displayName.trim()
+          : slug.trim();
+      models.push({ id: slug.trim(), label });
+    }
+    return dedupeModels(models);
+  } catch {
+    return [];
+  }
 }
 
 function resolveOpenAiApiKey(): string | null {
@@ -73,8 +119,13 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
   const apiKey = resolveOpenAiApiKey();
+  if (!apiKey) {
+    // ChatGPT-authenticated installs have no API key. Their catalog lives in
+    // the Codex CLI's own models_cache.json, merged over the static fallback
+    // so no id that shipped in a release disappears.
+    return mergedWithFallback(readCodexModelsCache());
+  }
   const fallback = dedupeModels(codexFallbackModels);
-  if (!apiKey) return fallback;
 
   const now = Date.now();
   const keyFingerprint = fingerprint(apiKey);
