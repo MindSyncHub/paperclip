@@ -48,13 +48,9 @@ describe("codex model discovery via the CLI models cache", () => {
     else process.env.OPENAI_API_KEY = originalOpenAiKey;
   });
 
-  it("returns the static fallback when the cache file is missing", async () => {
+  it("returns the static fallback in its original order when the cache file is missing", async () => {
     const models = await listCodexModels();
-    expect(models.map((m) => m.id)).toEqual(
-      [...codexFallbackModels.map((m) => m.id)].sort((a, b) =>
-        a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }),
-      ),
-    );
+    expect(models).toEqual(codexFallbackModels);
   });
 
   it("lists cache entries with visibility list and keeps internal slugs out", async () => {
@@ -88,15 +84,11 @@ describe("codex model discovery via the CLI models cache", () => {
     expect(models.find((m) => m.id === "o3-mini")?.label).toBe("o3-mini");
   });
 
-  it("returns the static fallback when the cache file is malformed", async () => {
+  it("returns the static fallback in its original order when the cache file is malformed", async () => {
     writeCache(tempHome, "{not json");
 
     const models = await refreshCodexModels();
-    expect(models.map((m) => m.id)).toEqual(
-      [...codexFallbackModels.map((m) => m.id)].sort((a, b) =>
-        a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }),
-      ),
-    );
+    expect(models).toEqual(codexFallbackModels);
   });
 
   it("returns the static fallback when the cache payload has no models array", async () => {

@@ -139,8 +139,13 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
   if (!apiKey) {
     // ChatGPT-authenticated installs have no API key. Their catalog lives in
     // the Codex CLI's own models_cache.json, merged over the static fallback
-    // so no id that shipped in a release disappears.
-    return mergedWithFallback(readCodexModelsCache({ forceRefresh }));
+    // so no id that shipped in a release disappears. Keep the fallback's
+    // original order (no sort) so a missing cache degrades to exactly the
+    // pre-change result.
+    return dedupeModels([
+      ...readCodexModelsCache({ forceRefresh }),
+      ...codexFallbackModels,
+    ]);
   }
   const fallback = dedupeModels(codexFallbackModels);
 
