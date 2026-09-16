@@ -4843,13 +4843,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       response = await sendToolsList(sessionHeaders);
     } else {
       response = await sendToolsList(headers);
-      // `tools/list` is read-only, so a client-error status that can mean
-      // "missing session" can safely be retried after the MCP initialize
-      // handshake. Stateful servers such as Supabase answer 400, while
-      // session-expired or session-required servers following the Streamable
-      // HTTP spec answer 404 (see #12697). Both require the returned
-      // Mcp-Session-Id on every non-initialization request.
-      if (response.status === 400 || response.status === 404) {
+      // `tools/list` is read-only, so any failure can safely be retried after
+      // the MCP initialize handshake. Servers that require a session report a
+      // missing one with whichever client error they prefer: Supabase answers
+      // 400, `mark3labs/mcp-go` answers 404, and nanobot answers 405 (#12697).
+      // Matching on the status leaves the next one broken, so let the retry
+      // itself decide: it only runs on a request that already failed, and the
+      // handshake result is what marks the connection as session-bound.
+      if (!response.ok) {
         try {
           const sessionHeaders = await initializeMcpHttpSession({
             send: sendRemote,
@@ -5498,12 +5499,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
     }
 
+    // `discoverTools` can persist connection config while it runs — the MCP
+    // session preference is written there — so start from the stored row
+    // instead of the copy loaded before discovery, which would put the old
+    // config back and lose what discovery just learned.
+    const discoveredConnection = await getConnectionRow(connectionId);
     const normalizedConfig = refreshOptions.enableAllByDefault
-      ? { ...connection.config, quarantineNewEntries: false }
-      : connection.config;
+      ? { ...discoveredConnection.config, quarantineNewEntries: false }
+      : discoveredConnection.config;
     const normalizedTransportConfig = refreshOptions.enableAllByDefault
-      ? { ...connection.transportConfig, quarantineNewEntries: false }
-      : connection.transportConfig;
+      ? { ...discoveredConnection.transportConfig, quarantineNewEntries: false }
+      : discoveredConnection.transportConfig;
     const [updatedConnection] = await db
       .update(toolConnections)
       .set({

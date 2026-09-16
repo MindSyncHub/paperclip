@@ -4156,6 +4156,110 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(requests.filter(({ method }) => method === "initialize").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("initializes servers that answer 405 for a session-less tools/list", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const requests: Array<{ method: string; sessionId: string | null }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const requestHeaders = new Headers(init?.headers);
+      requests.push({ method: payload.method ?? "", sessionId: requestHeaders.get("mcp-session-id") });
+      if (payload.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "stateful-405", version: "1" },
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json", "mcp-session-id": "session-405" },
+        });
+      }
+      if (payload.method === "notifications/initialized") {
+        expect(requestHeaders.get("mcp-session-id")).toBeTruthy();
+        return new Response(null, { status: 202 });
+      }
+      if (payload.method === "tools/list" && !requestHeaders.get("mcp-session-id")) {
+        // nanobot, which fronts Obot MCP gateways, refuses every message that
+        // arrives before `initialize` with 405 rather than 400 or 404 (#12697).
+        return new Response(JSON.stringify({ http_error: "Method \"tools/list\" not allowed prior to initialization" }), {
+          status: 405,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { tools: [{ name: "list_state", annotations: { readOnlyHint: true } }] },
+      });
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      link: "https://stateful-405.example/mcp",
+      name: "Stateful 405 MCP",
+    }, { actorType: "user", actorId: "board" });
+
+    expect(result.connection.config).toMatchObject({ mcpSessionRequired: true });
+    expect(result.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
+    ]);
+    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+  });
+
+  it("keeps the session requirement it learns during a catalog refresh", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    let sessionRequired = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const requestHeaders = new Headers(init?.headers);
+      if (payload.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "late-session", version: "1" },
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json", "mcp-session-id": "session-late" },
+        });
+      }
+      if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (sessionRequired && !requestHeaders.get("mcp-session-id")) {
+        return new Response(JSON.stringify({ http_error: "session required" }), {
+          status: 405,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { tools: [{ name: "list_state", annotations: { readOnlyHint: true } }] },
+      });
+    });
+
+    const connected = await service.connectGalleryApp(company.id, {
+      link: "https://late-session.example/mcp",
+      name: "Late session MCP",
+    }, { actorType: "user", actorId: "board" });
+    expect(connected.connection.config).not.toMatchObject({ mcpSessionRequired: true });
+
+    // The server starts keeping sessions. Discovery learns that during the
+    // refresh, and the refresh must not write the pre-discovery config back.
+    sessionRequired = true;
+    await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board" });
+
+    await expect(service.getConnection(connected.connectionId)).resolves.toMatchObject({
+      config: expect.objectContaining({ mcpSessionRequired: true }),
+    });
+  });
+
   it("does not treat a 404 that survives the handshake as a session requirement", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
