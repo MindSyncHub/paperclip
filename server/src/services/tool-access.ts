@@ -4832,40 +4832,60 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       headers: mcpHttpRequestHeaders(requestHeaders),
       body: listRequestBody,
     });
-    let usedInitializedSession = connection.config.mcpSessionRequired === true;
-    let response: Response;
-    if (usedInitializedSession) {
+    // MCP Streamable HTTP puts `initialize` first. Paperclip sent `tools/list`
+    // on its own and only handshook after a status it recognised, so every
+    // server that enforces the order reported the same thing in a different
+    // dialect: Supabase answers 400, `mark3labs/mcp-go` answers 404, and
+    // nanobot answers 405 (#12697). Enumerating those leaves the next one
+    // broken, so follow the protocol instead and record what the server turned
+    // out to be. Steady state stays at one round trip either way.
+    const openSession = async () => {
       const sessionHeaders = await initializeMcpHttpSession({
         send: sendRemote,
         headers,
         requestId: "paperclip-catalog-refresh",
       });
-      response = await sendToolsList(sessionHeaders);
-    } else {
+      return {
+        sessionHeaders,
+        // Only a server that issued an id is keeping a session. One that
+        // accepts the handshake without an id is stateless, so later refreshes
+        // can skip it.
+        issuedSession: Boolean(sessionHeaders["Mcp-Session-Id"]),
+      };
+    };
+    let usedInitializedSession = false;
+    let response: Response;
+    if (connection.config.mcpSessionRequired === false) {
       response = await sendToolsList(headers);
-      // `tools/list` is read-only, so a client-error status that can mean
-      // "missing session" can safely be retried after the MCP initialize
-      // handshake. Stateful servers such as Supabase answer 400, while
-      // session-expired or session-required servers following the Streamable
-      // HTTP spec answer 404 (see #12697). Both require the returned
-      // Mcp-Session-Id on every non-initialization request.
-      if (response.status === 400 || response.status === 404) {
+      if (!response.ok) {
+        // A server that started keeping sessions since the last refresh gets
+        // one handshake to prove it. `tools/list` is read-only, so repeating it
+        // is safe, and no status is matched to decide.
         try {
-          const sessionHeaders = await initializeMcpHttpSession({
-            send: sendRemote,
-            headers,
-            requestId: "paperclip-catalog-refresh",
-          });
+          const { sessionHeaders, issuedSession } = await openSession();
           response = await sendToolsList(sessionHeaders);
-          usedInitializedSession = response.ok;
+          usedInitializedSession = issuedSession;
         } catch {
-          // Preserve the original HTTP failure below when this was not an MCP
-          // session requirement after all.
+          // Preserve the session-less failure above.
         }
       }
+    } else {
+      try {
+        const { sessionHeaders, issuedSession } = await openSession();
+        response = await sendToolsList(sessionHeaders);
+        usedInitializedSession = issuedSession;
+      } catch {
+        // The server refused the handshake itself, so it does not want one.
+        response = await sendToolsList(headers);
+      }
     }
-    if (usedInitializedSession && connection.config.mcpSessionRequired !== true) {
-      const nextConfig = { ...connection.config, mcpSessionRequired: true };
+    // Only a request that succeeded proves which shape this server is. A
+    // failure leaves the stored answer alone so the next refresh can learn.
+    if (response.ok && connection.config.mcpSessionRequired !== usedInitializedSession) {
+      const nextConfig = {
+        ...connection.config,
+        mcpSessionRequired: usedInitializedSession,
+      };
       await db.update(toolConnections).set({
         config: nextConfig,
         transportConfig: nextConfig,
@@ -5498,12 +5518,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
     }
 
+    // `discoverTools` can persist connection config while it runs — the MCP
+    // session preference is written there — so start from the stored row
+    // instead of the copy loaded before discovery, which would put the old
+    // config back and lose what discovery just learned.
+    const discoveredConnection = await getConnectionRow(connectionId);
     const normalizedConfig = refreshOptions.enableAllByDefault
-      ? { ...connection.config, quarantineNewEntries: false }
-      : connection.config;
+      ? { ...discoveredConnection.config, quarantineNewEntries: false }
+      : discoveredConnection.config;
     const normalizedTransportConfig = refreshOptions.enableAllByDefault
-      ? { ...connection.transportConfig, quarantineNewEntries: false }
-      : connection.transportConfig;
+      ? { ...discoveredConnection.transportConfig, quarantineNewEntries: false }
+      : discoveredConnection.transportConfig;
     const [updatedConnection] = await db
       .update(toolConnections)
       .set({
