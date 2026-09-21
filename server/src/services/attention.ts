@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1663,11 +1663,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
-      const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
-      const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
-        if (!oldest || row.createdAt < oldest) return row.createdAt;
-        return oldest;
-      }, null);
+      // Bound the newer-run scan per agent. A newer run can only suppress a
+      // failed run of the same agent+issue pair, so each agent's window
+      // starts at its own oldest exhausted failure. One ancient failure no
+      // longer re-opens a window over every run of every failed agent.
+      const oldestFailedRunCreatedAtByAgent = new Map<string, Date>();
+      for (const row of failedRows) {
+        const oldest = oldestFailedRunCreatedAtByAgent.get(row.agentId);
+        if (!oldest || row.createdAt < oldest) {
+          oldestFailedRunCreatedAtByAgent.set(row.agentId, row.createdAt);
+        }
+      }
       const [failedIssueMap, failedImageMap, newerRuns] = await Promise.all([
         issueSummaryMap(
           db,
@@ -1675,7 +1681,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           failedIssueIds,
         ),
         issueImageMap(db, companyId, failedIssueIds),
-        oldestFailedRunCreatedAt && failedAgentIds.length > 0
+        oldestFailedRunCreatedAtByAgent.size > 0
           ? db
             .select({
               agentId: heartbeatRuns.agentId,
@@ -1688,8 +1694,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             .from(heartbeatRuns)
             .where(and(
               eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.agentId, failedAgentIds),
-              gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
+              or(
+                ...[...oldestFailedRunCreatedAtByAgent.entries()].map(([agentId, oldestCreatedAt]) =>
+                  and(
+                    eq(heartbeatRuns.agentId, agentId),
+                    gt(heartbeatRuns.createdAt, oldestCreatedAt),
+                  )),
+              ),
             ))
           : Promise.resolve([]),
       ]);
