@@ -41,7 +41,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
-import { attentionService } from "../services/attention.js";
+import { attentionService, oldestExhaustedFailureByAgent } from "../services/attention.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
@@ -2229,5 +2229,34 @@ describeEmbeddedPostgres("attention service", () => {
       expect(byKey.get(key)).toMatchObject({ shelf: true, retentionDays: 30, archivedAt: null });
     }
     expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
+  });
+});
+
+describe("oldestExhaustedFailureByAgent", () => {
+  it("bounds each agent's window to its own oldest exhausted failure", () => {
+    const agentA = randomUUID();
+    const agentB = randomUUID();
+    const aOldest = new Date("2026-06-13T00:00:00.000Z");
+    const aNewer = new Date("2026-07-01T00:00:00.000Z");
+    const bOldest = new Date("2026-09-09T12:00:00.000Z");
+    const bNewer = new Date("2026-09-09T13:00:00.000Z");
+
+    const windows = oldestExhaustedFailureByAgent([
+      { agentId: agentA, createdAt: aNewer },
+      { agentId: agentB, createdAt: bNewer },
+      { agentId: agentA, createdAt: aOldest },
+      { agentId: agentB, createdAt: bOldest },
+    ]);
+
+    // Per-agent bounds: one agent's ancient failure must not widen the other
+    // agent's window. The pre-fix global window scanned every run since the
+    // oldest failure across all failed agents (#12500).
+    expect(windows.get(agentA)).toEqual(aOldest);
+    expect(windows.get(agentB)).toEqual(bOldest);
+    expect([...windows.keys()].sort()).toEqual([agentA, agentB].sort());
+  });
+
+  it("returns an empty map when there are no exhausted failures", () => {
+    expect(oldestExhaustedFailureByAgent([]).size).toBe(0);
   });
 });
