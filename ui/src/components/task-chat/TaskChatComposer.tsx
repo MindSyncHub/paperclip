@@ -952,6 +952,7 @@ export function TaskChatComposer({
     setBody("");
     setSubmitting(true);
     let attemptId: string | null = null;
+    let dispatched = false;
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
@@ -993,6 +994,7 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
         changeBody(bodyRef.current);
       }
+      dispatched = true;
       if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
@@ -1037,11 +1039,11 @@ export function TaskChatComposer({
       }
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
-      // The Board mutation owns durable error handling once the send is
-      // dispatched. An error that reaches here before dispatch (or a mutation
-      // rejection) would otherwise leave the composer silently restored with
-      // no sign that the message never sent.
-      if (!(error instanceof CommentSubmissionUnknownError)) {
+      // The Board mutation owns durable error handling, including its error
+      // toast, once the send is dispatched. Only errors before dispatch (for
+      // example the attempt-id failure this guards against) would otherwise
+      // leave the composer silently restored with no sign nothing was sent.
+      if (!dispatched && !(error instanceof CommentSubmissionUnknownError)) {
         toastActions?.pushToast({
           title: "Message not sent",
           body:
