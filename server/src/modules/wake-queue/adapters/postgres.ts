@@ -274,7 +274,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       // `inArray` statement on the first invalid uuid and blocks every queued
       // wake for the issue. Skip them up front so one bad id cannot take down
       // the batch; the liveness filters below already treat them as not live.
-      const queryableCommentIds = queuedCommentIds.filter((commentId) => isUuidLike(commentId));
+      const queryableCommentIds = queuedCommentIds
+        .map((commentId) => commentId.trim())
+        .filter((commentId) => isUuidLike(commentId));
       const rows = queryableCommentIds.length === 0 ? [] : await tx
         .select({ id: issueComments.id, deletedAt: issueComments.deletedAt, createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
