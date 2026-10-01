@@ -475,6 +475,34 @@ describe("agent routes adapter validation", () => {
     ]);
   });
 
+  it("refuses to guess between stored secrets that redact identically", async () => {
+    // Two distinct keys render to the same redacted text. An edit that shifts
+    // their positions must not swap them: the ambiguous items stay as
+    // submitted (the pre-restore behavior) instead of guessing.
+    const firstKeyArg = "--api-key=sk-ant-api03-first0000000000000000000000000000000000000000";
+    const secondKeyArg = "--api-key=sk-ant-api03-second00000000000000000000000000000000000000";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      adapterType: "codex_local",
+      adapterConfig: { extraArgs: ["--sandbox", firstKeyArg, secondKeyArg] },
+    });
+    const { redactSanitizedTextLeaf } = await import("../redaction.js");
+    const app = await createApp();
+    const redacted = redactSanitizedTextLeaf(firstKeyArg);
+    expect(redacted).toBe(redactSanitizedTextLeaf(secondKeyArg));
+    const submittedExtraArgs = ["--verbose", "--sandbox", redacted, redacted];
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { extraArgs: submittedExtraArgs } }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual(
+      submittedExtraArgs,
+    );
+  });
+
   it("does not restore old-adapter extraArgs when the adapter type changes", async () => {
     const storedKeyArg = "--api-key=sk-ant-api03-4eC1uded000000000000000000000000000000000000000";
     mockAgentService.getById.mockResolvedValue({

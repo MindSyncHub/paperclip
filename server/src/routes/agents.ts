@@ -3196,34 +3196,31 @@ export function agentRoutes(
     ) {
       const existingExtraArgs = existingConfig.extraArgs as unknown[];
       const usedStoredIndexes = new Set<number>();
-      const findStoredIndex = (item: string, preferredIndex: number) => {
+      const findStoredIndex = (item: string) => {
         // Clients edit extraArgs positionally (insert/remove), so a redacted
-        // item may sit at a different index than the stored one. Prefer the
-        // same index, then fall back to the first unused stored item whose
-        // redacted rendering matches.
-        const preferred = existingExtraArgs[preferredIndex];
-        if (
-          typeof preferred === "string"
-          && !usedStoredIndexes.has(preferredIndex)
-          && redactSanitizedTextLeaf(preferred) === item
-        )
-          return preferredIndex;
+        // item may sit at a different index than the stored one. Restore only
+        // when exactly one unused stored item renders to the submitted value:
+        // several distinct secrets can redact to the same text, and guessing
+        // would silently swap them.
+        let match: number | null = null;
         for (let index = 0; index < existingExtraArgs.length; index += 1) {
           if (usedStoredIndexes.has(index)) continue;
           const stored = existingExtraArgs[index];
-          if (typeof stored === "string" && redactSanitizedTextLeaf(stored) === item)
-            return index;
+          if (typeof stored !== "string" || redactSanitizedTextLeaf(stored) !== item)
+            continue;
+          if (match !== null) return null;
+          match = index;
         }
-        return null;
+        return match;
       };
       restoredConfig = {
         ...restoredConfig,
-        extraArgs: (restoredConfig.extraArgs as unknown[]).map((item, index) => {
+        extraArgs: (restoredConfig.extraArgs as unknown[]).map((item) => {
           if (typeof item !== "string") return item;
           // An item identical to the redacted rendering of a stored value
           // means the client echoed the GET response back unchanged; restore
           // the stored value. Anything else is a real edit and is kept.
-          const storedIndex = findStoredIndex(item, index);
+          const storedIndex = findStoredIndex(item);
           if (storedIndex === null) return item;
           usedStoredIndexes.add(storedIndex);
           return existingExtraArgs[storedIndex];
