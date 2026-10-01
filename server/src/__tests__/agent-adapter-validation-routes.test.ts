@@ -444,6 +444,65 @@ describe("agent routes adapter validation", () => {
     expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual(storedExtraArgs);
   });
 
+  it("restores a redacted extraArgs item that shifted position after an insert", async () => {
+    const storedKeyArg = "--api-key=sk-ant-api03-4eC1uded000000000000000000000000000000000000000";
+    const storedExtraArgs = ["--sandbox", storedKeyArg];
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      adapterType: "codex_local",
+      adapterConfig: { extraArgs: storedExtraArgs },
+    });
+    const { redactSanitizedTextLeaf } = await import("../redaction.js");
+    const app = await createApp();
+    // The client inserted an argument before the redacted one, so the redacted
+    // rendering now sits at a different index than the stored value.
+    const submittedExtraArgs = [
+      "--verbose",
+      "--sandbox",
+      redactSanitizedTextLeaf(storedKeyArg),
+    ];
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { extraArgs: submittedExtraArgs } }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual([
+      "--verbose",
+      "--sandbox",
+      storedKeyArg,
+    ]);
+  });
+
+  it("does not restore old-adapter extraArgs when the adapter type changes", async () => {
+    const storedKeyArg = "--api-key=sk-ant-api03-4eC1uded000000000000000000000000000000000000000";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      adapterType: "codex_local",
+      adapterConfig: { extraArgs: ["--sandbox", storedKeyArg] },
+    });
+    const { redactSanitizedTextLeaf } = await import("../redaction.js");
+    const app = await createApp();
+    const redactedKeyArg = redactSanitizedTextLeaf(storedKeyArg);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterType: "process",
+          adapterConfig: { command: "run.sh", extraArgs: ["--sandbox", redactedKeyArg] },
+        }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    // Hidden command-line values from the old adapter must not transfer into
+    // the new one; the redacted rendering is kept as submitted.
+    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual([
+      "--sandbox",
+      redactedKeyArg,
+    ]);
+  });
+
   it("keeps a genuinely edited extraArgs item instead of restoring the stored value", async () => {
     const storedExtraArgs = ["-c", 'permissions.p.filesystem={"~/.ssh"="deny"}'];
     mockAgentService.getById.mockResolvedValue({

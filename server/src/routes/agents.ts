@@ -3163,6 +3163,7 @@ export function agentRoutes(
   function restoreRedactedAgentConfig(
     requestedConfig: Record<string, unknown>,
     existingConfig: Record<string, unknown>,
+    opts?: { restoreExtraArgs?: boolean },
   ): Record<string, unknown> {
     let restoredConfig = requestedConfig;
     const requestedEnv = asRecord(restoredConfig.env);
@@ -3186,20 +3187,46 @@ export function agentRoutes(
     // GET responses. Without a restore pass, a read-modify-write (including
     // the board UI's save flow) persists the "***REDACTED***" rendering and
     // silently breaks the stored command line (e.g. a Codex sandbox lock).
+    // Skipped on adapter switches: hidden values from the old adapter must
+    // not transfer into a different harness.
     if (
-      Array.isArray(restoredConfig.extraArgs)
+      opts?.restoreExtraArgs !== false
+      && Array.isArray(restoredConfig.extraArgs)
       && Array.isArray(existingConfig.extraArgs)
     ) {
       const existingExtraArgs = existingConfig.extraArgs as unknown[];
+      const usedStoredIndexes = new Set<number>();
+      const findStoredIndex = (item: string, preferredIndex: number) => {
+        // Clients edit extraArgs positionally (insert/remove), so a redacted
+        // item may sit at a different index than the stored one. Prefer the
+        // same index, then fall back to the first unused stored item whose
+        // redacted rendering matches.
+        const preferred = existingExtraArgs[preferredIndex];
+        if (
+          typeof preferred === "string"
+          && !usedStoredIndexes.has(preferredIndex)
+          && redactSanitizedTextLeaf(preferred) === item
+        )
+          return preferredIndex;
+        for (let index = 0; index < existingExtraArgs.length; index += 1) {
+          if (usedStoredIndexes.has(index)) continue;
+          const stored = existingExtraArgs[index];
+          if (typeof stored === "string" && redactSanitizedTextLeaf(stored) === item)
+            return index;
+        }
+        return null;
+      };
       restoredConfig = {
         ...restoredConfig,
         extraArgs: (restoredConfig.extraArgs as unknown[]).map((item, index) => {
-          const stored = existingExtraArgs[index];
-          if (typeof item !== "string" || typeof stored !== "string") return item;
-          // An item identical to the redacted rendering of the stored value
+          if (typeof item !== "string") return item;
+          // An item identical to the redacted rendering of a stored value
           // means the client echoed the GET response back unchanged; restore
           // the stored value. Anything else is a real edit and is kept.
-          return redactSanitizedTextLeaf(stored) === item ? stored : item;
+          const storedIndex = findStoredIndex(item, index);
+          if (storedIndex === null) return item;
+          usedStoredIndexes.add(storedIndex);
+          return existingExtraArgs[storedIndex];
         }),
       };
     }
@@ -5499,7 +5526,9 @@ export function agentRoutes(
         await assertCanManageInstructionsPath(req, existing);
       }
       let rawEffectiveAdapterConfig = requestedAdapterConfig
-        ? restoreRedactedAgentConfig(requestedAdapterConfig, existingAdapterConfig)
+        ? restoreRedactedAgentConfig(requestedAdapterConfig, existingAdapterConfig, {
+            restoreExtraArgs: !changingAdapterType,
+          })
         : changingAdapterType ? {} : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
