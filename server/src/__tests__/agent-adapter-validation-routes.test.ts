@@ -413,6 +413,56 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
+  it("restores redacted extraArgs from the saved agent config when updating", async () => {
+    const storedExtraArgs = [
+      "--sandbox",
+      "--api-key=sk-ant-api03-4eC1uded000000000000000000000000000000000000000",
+    ];
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      adapterType: "codex_local",
+      adapterConfig: { extraArgs: storedExtraArgs },
+    });
+    // Mirror what GET /api/agents/:id returns: the route redacts the stored
+    // adapterConfig through redactAgentAdapterConfig before responding.
+    const { redactAgentAdapterConfig } = await import("../redaction.js");
+    const redactedView = redactAgentAdapterConfig({ extraArgs: storedExtraArgs });
+    const redactedExtraArgs = redactedView.extraArgs as string[];
+    // The redacted view must differ from the stored value, or the restore
+    // assertion below would pass even if redaction stopped firing.
+    expect(redactedExtraArgs[1]).toContain("REDACTED");
+    expect(redactedExtraArgs[1]).not.toBe(storedExtraArgs[1]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { ...redactedView } }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual(storedExtraArgs);
+  });
+
+  it("keeps a genuinely edited extraArgs item instead of restoring the stored value", async () => {
+    const storedExtraArgs = ["-c", 'permissions.p.filesystem={"~/.ssh"="deny"}'];
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      adapterType: "codex_local",
+      adapterConfig: { extraArgs: storedExtraArgs },
+    });
+    const app = await createApp();
+    const editedExtraArgs = ["--model", "gpt-5.4"];
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { extraArgs: editedExtraArgs } }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual(editedExtraArgs);
+  });
+
   it("forwards a claude_local→process adapter move that drops the OAuth binding to the service unchanged", async () => {
     // The agent has the fixed Claude Code OAuth binding on the claude_local
     // adapter. A PATCH moves the agent to the process adapter and sends an empty
