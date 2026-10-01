@@ -225,13 +225,15 @@ export async function buildExecutionContinuation(input: {
     && string(input.context.retryOfRunId) === null
     && string(input.context.previousRunId) === null
     && sourceRun === null;
-  const sourceRunId = staleInterruptedSource ? null : requestedSourceRunId;
+  // A degraded hint falls back to the interaction producer so interaction
+  // wakes keep their source attribution.
+  const sourceRunId = staleInterruptedSource ? (producerRunId ?? null) : requestedSourceRunId;
   if (
     !staleInterruptedSource
-    && ((sourceRunId && !candidate) || (resumeSourceRunId && !sourceRun))
+    && ((requestedSourceRunId && !candidate) || (resumeSourceRunId && !sourceRun))
   )
     throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
-  const producer = producerRunId === sourceRunId ? candidate
+  const producer = producerRunId === requestedSourceRunId ? candidate
     : producerRunId ? await loadRun(producerRunId) : null;
   if (producerRunId && !producer) throw new Error("continuation_source_context_missing");
   const producerIssueId = string(object(producer?.context).issueId);
