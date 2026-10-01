@@ -3195,6 +3195,19 @@ export function agentRoutes(
       && Array.isArray(existingConfig.extraArgs)
     ) {
       const existingExtraArgs = existingConfig.extraArgs as unknown[];
+      // Unchanged save: every submitted item equals the redacted rendering of
+      // the stored item at the same position, so positions are provably
+      // untouched and the whole array can be restored verbatim - even when
+      // distinct secrets render identically.
+      const unchangedSave =
+        (restoredConfig.extraArgs as unknown[]).length === existingExtraArgs.length
+        && (restoredConfig.extraArgs as unknown[]).every((item, index) =>
+          typeof item === "string"
+          && typeof existingExtraArgs[index] === "string"
+          && redactSanitizedTextLeaf(existingExtraArgs[index] as string) === item);
+      if (unchangedSave) {
+        return { ...restoredConfig, extraArgs: [...existingExtraArgs] };
+      }
       const usedStoredIndexes = new Set<number>();
       const findStoredIndex = (item: string) => {
         // Clients edit extraArgs positionally (insert/remove), so a redacted

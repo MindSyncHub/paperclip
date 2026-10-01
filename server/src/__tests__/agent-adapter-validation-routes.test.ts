@@ -475,6 +475,34 @@ describe("agent routes adapter validation", () => {
     ]);
   });
 
+  it("restores an unchanged save even when two secrets render identically", async () => {
+    // Positions are provably untouched on an unchanged save, so both secrets
+    // restore verbatim despite rendering to the same redacted text.
+    const firstKeyArg = "--api-key=sk-ant-api03-first0000000000000000000000000000000000000000";
+    const secondKeyArg = "--api-key=sk-ant-api03-second00000000000000000000000000000000000000";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      adapterType: "codex_local",
+      adapterConfig: { extraArgs: ["--sandbox", firstKeyArg, secondKeyArg] },
+    });
+    const { redactSanitizedTextLeaf } = await import("../redaction.js");
+    const app = await createApp();
+    const redacted = redactSanitizedTextLeaf(firstKeyArg);
+    expect(redacted).toBe(redactSanitizedTextLeaf(secondKeyArg));
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { extraArgs: ["--sandbox", redacted, redacted] } }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual([
+      "--sandbox",
+      firstKeyArg,
+      secondKeyArg,
+    ]);
+  });
+
   it("refuses to guess between stored secrets that redact identically", async () => {
     // Two distinct keys render to the same redacted text. An edit that shifts
     // their positions must not swap them: the ambiguous items stay as
