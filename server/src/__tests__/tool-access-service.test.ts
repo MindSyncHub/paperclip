@@ -4168,10 +4168,12 @@ describeEmbeddedPostgres("tool access service", () => {
       return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain" } });
     });
 
+    // The original 404-derived failure must survive: the connect rejects with
+    // the tools/list HTTP status, not with a session-handshake error.
     await expect(service.connectGalleryApp(company.id, {
       link: "https://missing.example/mcp",
       name: "Missing MCP",
-    }, { actorType: "user", actorId: "board" })).rejects.toThrow();
+    }, { actorType: "user", actorId: "board" })).rejects.toThrow("Remote app returned HTTP 404");
 
     expect(methods.filter((method) => method === "tools/list").length).toBe(1);
   });
