@@ -3209,19 +3209,20 @@ export function agentRoutes(
         return { ...restoredConfig, extraArgs: [...existingExtraArgs] };
       }
       const usedStoredIndexes = new Set<number>();
-      const findStoredIndex = (item: string) => {
-        // Clients edit extraArgs positionally (insert/remove), so a redacted
-        // item may sit at a different index than the stored one. Restore only
-        // when exactly one unused stored item renders to the submitted value:
-        // several distinct secrets can redact to the same text, and guessing
-        // would silently swap them.
+      // Returns the matching index, null when nothing renders to the item, or
+      // "ambiguous" when several unused stored items render to it. Clients
+      // edit extraArgs positionally (insert/remove), so a redacted item may
+      // sit at a different index than the stored one; several distinct
+      // secrets can also redact to the same text, and guessing would
+      // silently swap them.
+      const findStoredIndex = (item: string): number | null | "ambiguous" => {
         let match: number | null = null;
         for (let index = 0; index < existingExtraArgs.length; index += 1) {
           if (usedStoredIndexes.has(index)) continue;
           const stored = existingExtraArgs[index];
           if (typeof stored !== "string" || redactSanitizedTextLeaf(stored) !== item)
             continue;
-          if (match !== null) return null;
+          if (match !== null) return "ambiguous";
           match = index;
         }
         return match;
@@ -3234,6 +3235,15 @@ export function agentRoutes(
           // means the client echoed the GET response back unchanged; restore
           // the stored value. Anything else is a real edit and is kept.
           const storedIndex = findStoredIndex(item);
+          if (storedIndex === "ambiguous") {
+            // Persisting the submitted placeholder here would corrupt the
+            // stored command line (and can also destroy the surviving
+            // secret), so refuse the save and ask the operator to re-enter
+            // the affected values.
+            throw unprocessable(
+              "Two or more saved extraArgs values redact to the same text, so this change cannot be applied safely. Re-enter the affected values.",
+            );
+          }
           if (storedIndex === null) return item;
           usedStoredIndexes.add(storedIndex);
           return existingExtraArgs[storedIndex];

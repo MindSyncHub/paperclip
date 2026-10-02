@@ -503,10 +503,12 @@ describe("agent routes adapter validation", () => {
     ]);
   });
 
-  it("refuses to guess between stored secrets that redact identically", async () => {
+  it("rejects an ambiguous restore instead of persisting the placeholder", async () => {
     // Two distinct keys render to the same redacted text. An edit that shifts
-    // their positions must not swap them: the ambiguous items stay as
-    // submitted (the pre-restore behavior) instead of guessing.
+    // their positions must not swap them - but keeping the submitted
+    // placeholder would persist the literal redaction text into the stored
+    // command line and destroy the surviving secret, so the save is refused
+    // with a 422 and nothing is written.
     const firstKeyArg = "--api-key=sk-ant-api03-first0000000000000000000000000000000000000000";
     const secondKeyArg = "--api-key=sk-ant-api03-second00000000000000000000000000000000000000";
     mockAgentService.getById.mockResolvedValue({
@@ -524,11 +526,9 @@ describe("agent routes adapter validation", () => {
         .patch("/api/agents/11111111-1111-4111-8111-111111111111")
         .send({ adapterConfig: { extraArgs: submittedExtraArgs } }),
     );
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    expect((patch.adapterConfig as Record<string, unknown>).extraArgs).toEqual(
-      submittedExtraArgs,
-    );
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("Re-enter the affected values");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
   it("does not restore old-adapter extraArgs when the adapter type changes", async () => {
